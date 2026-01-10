@@ -1,0 +1,250 @@
+// messaging/nats_client.go
+package messaging
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+const (
+	TaskSubject     = "tasks.new"
+	TaskStreamName  = "TASKS"
+	TaskDurableName = "TASK_WORKER"
+)
+
+type MessageClient interface {
+	PublishTask(ctx context.Context, taskID string) error
+	SubscribeToTasks(ctx context.Context, handler func(taskID string)) error
+	Close()
+	HealthCheck() error
+}
+
+type natsClient struct {
+	nc *nats.Conn
+	js jetstream.JetStream
+}
+
+type TaskMessage struct {
+	TaskID    string    `json:"task_id"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+func NewNatsClient(url string) (MessageClient, error) {
+	opts := []nats.Option{
+		nats.Name("task-worker"),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(2 * time.Second),
+		nats.DisconnectErrHandler(func(nc *nats.Conn, err error) {
+			log.Printf("NATS disconnected: %v", err)
+		}),
+		nats.ReconnectHandler(func(nc *nats.Conn) {
+			log.Printf("NATS reconnected to %s", nc.ConnectedUrl())
+		}),
+		nats.ClosedHandler(func(nc *nats.Conn) {
+			log.Printf("NATS connection closed")
+		}),
+	}
+
+	nc, err := nats.Connect(url, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to NATS: %w", err)
+	}
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("failed to create JetStream context: %w", err)
+	}
+
+	// Создаем или получаем stream
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	streamCfg := jetstream.StreamConfig{
+		Name:      TaskStreamName,
+		Subjects:  []string{TaskSubject},
+		Retention: jetstream.WorkQueuePolicy,
+		Storage:   jetstream.FileStorage,
+		MaxMsgs:   100000,
+		MaxAge:    24 * time.Hour * 7,
+	}
+
+	_, err = js.CreateOrUpdateStream(ctx, streamCfg)
+	if err != nil {
+		nc.Close()
+		return nil, fmt.Errorf("failed to create/update stream: %w", err)
+	}
+
+	log.Printf("NATS JetStream initialized with stream: %s", TaskStreamName)
+
+	return &natsClient{
+		nc: nc,
+		js: js,
+	}, nil
+}
+
+func isConsumerAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "consumer name already in use") ||
+		strings.Contains(errStr, "already exists")
+}
+
+func (c *natsClient) PublishTask(ctx context.Context, taskID string) error {
+	message := TaskMessage{
+		TaskID:    taskID,
+		Timestamp: time.Now(),
+	}
+
+	data, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	ack, err := c.js.Publish(ctx, TaskSubject, data)
+	if err != nil {
+		return fmt.Errorf("failed to publish message: %w", err)
+	}
+
+	log.Printf("Task %s published to NATS (seq: %d)", taskID, ack.Sequence)
+	return nil
+}
+
+func (c *natsClient) SubscribeToTasks(ctx context.Context, handler func(taskID string)) error {
+	stream, err := c.js.Stream(ctx, TaskStreamName)
+	if err != nil {
+		return fmt.Errorf("failed to get stream: %w", err)
+	}
+
+	// Конфигурация pull consumer
+	consumerConfig := jetstream.ConsumerConfig{
+		Durable:       TaskDurableName,
+		DeliverPolicy: jetstream.DeliverAllPolicy,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		AckWait:       30 * time.Second,
+		MaxDeliver:    3,
+		MaxAckPending: 100,
+		FilterSubject: TaskSubject,
+	}
+
+	// Создаем или получаем consumer
+	consumer, err := stream.CreateOrUpdateConsumer(ctx, consumerConfig)
+	if err != nil {
+		if isConsumerAlreadyExistsError(err) {
+			consumer, err = stream.Consumer(ctx, TaskDurableName)
+			if err != nil {
+				return fmt.Errorf("failed to get existing consumer: %w", err)
+			}
+			log.Printf("Using existing NATS consumer: %s", TaskDurableName)
+		} else {
+			return fmt.Errorf("failed to create consumer: %w", err)
+		}
+	} else {
+		log.Printf("Created new NATS consumer: %s", TaskDurableName)
+	}
+
+	// Создаем pull subscription
+	go c.consumeMessages(ctx, consumer, handler)
+
+	return nil
+}
+
+func (c *natsClient) consumeMessages(ctx context.Context,
+	consumer jetstream.Consumer,
+	handler func(taskID string)) {
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Message consumption stopped")
+			return
+		default:
+			// Используем Fetch с таймаутом
+			msgs, err := consumer.Fetch(1, jetstream.FetchMaxWait(5*time.Second))
+			if err != nil {
+				if err == jetstream.ErrNoMessages {
+					// Нет сообщений - продолжаем ждать
+					continue
+				}
+				if strings.Contains(err.Error(), "context") {
+					// Контекст отменен
+					return
+				}
+				log.Printf("Error fetching messages: %v", err)
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			// Обрабатываем сообщения
+			for msg := range msgs.Messages() {
+				c.handleSingleMessage(msg, handler)
+			}
+
+			// Проверяем ошибки после получения сообщений
+			if err := msgs.Error(); err != nil {
+				if err != jetstream.ErrNoMessages && !strings.Contains(err.Error(), "context") {
+					log.Printf("Error in message batch: %v", err)
+				}
+			}
+		}
+	}
+}
+
+func (c *natsClient) handleSingleMessage(msg jetstream.Msg, handler func(taskID string)) {
+	var taskMsg TaskMessage
+
+	// Получаем метаданные сообщения
+	metadata, err := msg.Metadata()
+	if err != nil {
+		log.Printf("Failed to get message metadata: %v", err)
+		msg.Nak()
+		return
+	}
+
+	// Декодируем сообщение
+	if err := json.Unmarshal(msg.Data(), &taskMsg); err != nil {
+		log.Printf("Failed to unmarshal message: %v", err)
+		msg.Nak()
+		return
+	}
+
+	log.Printf("Received task %s (stream: %s, seq: %d)",
+		taskMsg.TaskID, metadata.Stream, metadata.Sequence.Stream)
+
+	// Вызываем обработчик
+	handler(taskMsg.TaskID)
+
+	// Подтверждаем обработку
+	if err := msg.Ack(); err != nil {
+		log.Printf("Failed to ACK message: %v", err)
+	}
+}
+
+func (c *natsClient) HealthCheck() error {
+	if c.nc == nil || !c.nc.IsConnected() {
+		return fmt.Errorf("NATS not connected")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := c.js.Stream(ctx, TaskStreamName)
+	return err
+}
+
+func (c *natsClient) Close() {
+	if c.nc != nil {
+		c.nc.Drain()
+		c.nc.Close()
+		log.Println("NATS connection closed")
+	}
+}

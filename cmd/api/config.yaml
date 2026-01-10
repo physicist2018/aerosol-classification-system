@@ -1,0 +1,17 @@
+# config.yaml
+redis_url: "lidarbackup.dvo.ru:49155"
+redis_password: ""
+redis_db: 0
+redis_stream: "tasks-stream"
+redis_consumer_group: "tasks-workers"
+
+rethinkdb_url: "lidarbackup.dvo.ru:49160"
+db_name: "aerosol_classification_system"
+table_name: "classification_results"
+
+server_port: ":8081"
+health_port: ":8082"
+
+worker_count: 1
+task_timeout: "60m"
+batch_size: 1

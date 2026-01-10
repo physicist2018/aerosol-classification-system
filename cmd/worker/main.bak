@@ -1,0 +1,164 @@
+// cmd/worker/main.go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"aerosol-system/internal/config"
+	"aerosol-system/internal/messaging"
+	"aerosol-system/internal/repository"
+	"aerosol-system/internal/worker"
+
+	r "gopkg.in/rethinkdb/rethinkdb-go.v6"
+)
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("=== Starting Worker Service ===")
+
+	// Загружаем конфигурацию
+	cfg := config.Load()
+
+	// Создаем контекст
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Подключаемся к RethinkDB
+	log.Println(cfg)
+	rethinkSession, err := r.Connect(r.ConnectOpts{
+
+		Address:  cfg.RethinkDBURL,
+		Database: cfg.DBName,
+		MaxOpen:  20,
+	})
+	if err != nil {
+		log.Fatalf("Failed to connect to RethinkDB: %v", err)
+	}
+	defer rethinkSession.Close()
+
+	// Проверяем подключение
+	if _, err := r.DB(cfg.DBName).TableList().Run(rethinkSession); err != nil {
+		log.Printf("Warning: Database/table might not exist: %v", err)
+	}
+
+	// Создаем репозиторий
+	repo := repository.NewTaskRepository(rethinkSession, cfg.TableName)
+
+	// Подключаемся к NATS
+	natsClient, err := messaging.NewNatsClient(cfg.NatsURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to NATS: %v", err)
+	}
+	defer natsClient.Close()
+
+	// Запускаем health server
+	go runHealthServer(cfg.HealthPort, natsClient, rethinkSession)
+
+	// Создаем воркеров
+	workers := make([]*worker.Worker, 0, cfg.WorkerCount)
+
+	for i := 1; i <= cfg.WorkerCount; i++ {
+		hostname, _ := os.Hostname()
+		workerID := fmt.Sprintf("%s-%d-pid%d", hostname, i, os.Getpid())
+
+		w := worker.NewWorker(workerID, repo, natsClient, cfg)
+		workers = append(workers, w)
+
+		go func(w *worker.Worker, idx int) {
+			log.Printf("Starting worker %d: %s", idx, workerID)
+			if err := w.Start(ctx); err != nil {
+				log.Printf("Worker %d stopped with error: %v", idx, err)
+			}
+		}(w, i)
+	}
+
+	log.Printf("Started %d workers. Ready to process tasks.", len(workers))
+
+	// Ожидаем сигналы
+	waitForShutdown(cancel, workers)
+
+	log.Println("=== Worker Service Stopped ===")
+}
+
+func runHealthServer(port string, natsClient messaging.MessageClient, session *r.Session) {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, rr *http.Request) {
+		// Проверяем NATS
+		if err := natsClient.HealthCheck(); err != nil {
+			http.Error(w, "NATS unhealthy: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+
+		// Проверяем RethinkDB
+		ctx, cancel := context.WithTimeout(rr.Context(), 2*time.Second)
+		defer cancel()
+
+		if _, err := r.DBList().Run(session, r.RunOpts{Context: ctx}); err != nil {
+			http.Error(w, "RethinkDB unhealthy: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"healthy"}`))
+	})
+
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ready"))
+	})
+
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		// Здесь можно добавить сбор статистики по воркерам
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"service":"worker","status":"running"}`))
+	})
+
+	server := &http.Server{
+		Addr:    port,
+		Handler: mux,
+	}
+
+	log.Printf("Health server listening on %s", port)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Health server error: %v", err)
+	}
+}
+
+func waitForShutdown(cancel context.CancelFunc, workers []*worker.Worker) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Первый сигнал - graceful shutdown
+	sig := <-sigChan
+	log.Printf("Received signal: %v. Starting graceful shutdown...", sig)
+
+	// Отменяем контекст
+	cancel()
+
+	// Останавливаем всех воркеров
+	for i, w := range workers {
+		if w != nil {
+			w.Stop()
+			log.Printf("Stopped worker %d", i+1)
+		}
+	}
+
+	// Ждем завершения (макс 30 секунд)
+	shutdownTimeout := 30 * time.Second
+	select {
+	case <-time.After(shutdownTimeout):
+		log.Printf("Shutdown timeout after %v", shutdownTimeout)
+	case sig := <-sigChan:
+		log.Printf("Received second signal: %v. Forcing shutdown.", sig)
+	}
+}

@@ -1,0 +1,35 @@
+package config
+
+type Config struct {
+	// Define your configuration fields here
+	// NATS
+	NatsURL string
+
+	// RethinkDB
+	RethinkDBURL string
+	DBName       string
+	TableName    string
+
+	// Server
+	ServerPort string
+
+	// Worker
+	WorkerCount int
+
+	HealthPort  string
+	MetricsPort string
+}
+
+func Load() *Config {
+	// Implement the logic to load configuration from a file or other source
+	return &Config{
+		NatsURL:      "nats://localhost:4222",
+		RethinkDBURL: "lidarbackup.dvo.ru:49160",
+		DBName:       "aerosol_classification_system",
+		TableName:    "classification_results",
+		ServerPort:   ":8081",
+		WorkerCount:  5,
+		HealthPort:   ":8082",
+		MetricsPort:  ":8083",
+	}
+}
