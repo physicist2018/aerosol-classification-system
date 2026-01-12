@@ -14,6 +14,7 @@ import (
 	"aerosol-system/internal/domain"
 	"aerosol-system/internal/messaging"
 	"aerosol-system/internal/repository"
+	"aerosol-system/pkg/aerosol"
 )
 
 type Worker struct {
@@ -94,7 +95,7 @@ func (w *Worker) handleTask(taskID string) {
 	start := time.Now()
 
 	// Создаем контекст с таймаутом
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), w.cfg.TaskTimeout)
 	defer cancel()
 
 	// Обрабатываем задачу
@@ -173,8 +174,29 @@ func (w *Worker) processSingleTask(ctx context.Context, taskID string, attempt i
 // here must be called solution logic
 func (w *Worker) executeTask(task *domain.Task) (string, error) {
 	// Имитация обработки
+
 	processTime := time.Duration(rand.Intn(2000)+10000) * time.Millisecond // 1-3 секунды
 	time.Sleep(processTime)
+
+	// call classification subroutine
+	aerosolClassifier, err := aerosol.NewClassifier(aerosol.ClassifierConfig{
+		UrbanAerosol:  aerosol.AerosolParams{},
+		DustAerosol:   aerosol.AerosolParams{},
+		SmogAerosol:   aerosol.AerosolParams{},
+		NIters:        100,
+		BestSolutions: 10,
+		Logger:        nil,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to create aerosol classifier: %w", err)
+	}
+
+	_, err = aerosolClassifier.Classify(task.DepMat.Matrix(), task.FlCapMat.Matrix(), task.VolMat.Matrix(),
+		task.BackMat.Matrix())
+	if err != nil {
+		return "", fmt.Errorf("failed to classify aerosol: %w", err)
+	}
+	log.Println(err)
 
 	// Бизнес-логика здесь
 	result := fmt.Sprintf("Processed '%s' by %s in %v",

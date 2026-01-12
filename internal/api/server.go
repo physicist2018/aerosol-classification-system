@@ -12,11 +12,13 @@ import (
 
 	"aerosol-system/internal/config"
 	"aerosol-system/internal/domain"
+	"aerosol-system/internal/infrastructure"
 	"aerosol-system/internal/messaging"
 	"aerosol-system/internal/repository"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 )
 
 type Server struct {
@@ -150,6 +152,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	depFile := ""
 	flCapFile := ""
 	volFile := ""
+	backFile := ""
 
 	// Get files
 	formFiles := r.MultipartForm.File
@@ -175,20 +178,48 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 				depFile = string(content)
 			} else if fileName == "flcap" {
 				flCapFile = string(content)
-
 			} else if fileName == "vol" {
 				volFile = string(content)
+			} else if fileName == "beta" {
+				backFile = string(content)
 			}
 		}
 	}
 
+	reader := infrastructure.NewTXTFileReader(zap.L())
+	depMat, err := reader.ReadMatrix(depFile)
+
+	if err != nil {
+		s.respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	flCapMat, err := reader.ReadMatrix(flCapFile)
+	if err != nil {
+		s.respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	volMat, err := reader.ReadMatrix(volFile)
+	if err != nil {
+		s.respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	backMat, err := reader.ReadMatrix(backFile)
+	if err != nil {
+		s.respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	// Создаем задачу
 	task := &domain.Task{
-		Data:       req.Data,
-		Dep_file:   depFile,
-		FlCap_file: flCapFile,
-		Vol_file:   volFile,
-		Status:     domain.TaskStatusPending,
+		Data:     req.Data,
+		DepMat:   depMat,
+		FlCapMat: flCapMat,
+		VolMat:   volMat,
+		BackMat:  backMat,
+		Status:   domain.TaskStatusPending,
 	}
 
 	ctx := r.Context()
@@ -237,7 +268,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]interface{}{
+	response := map[string]any{
 		"tasks": tasks,
 		"count": len(tasks),
 		"limit": limit,
@@ -250,7 +281,7 @@ func (s *Server) updateTask(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	taskID := vars["id"]
 
-	var updates map[string]interface{}
+	var updates map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		s.respondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -275,7 +306,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := vars["id"]
 
 	// Вместо удаления, помечаем как удаленное
-	updates := map[string]interface{}{
+	updates := map[string]any{
 		"status":     "deleted",
 		"deleted_at": time.Now().UTC(),
 	}
@@ -290,7 +321,7 @@ func (s *Server) deleteTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
-	response := map[string]interface{}{
+	response := map[string]any{
 		"status":    "healthy",
 		"service":   "task-api",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -301,11 +332,11 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiDocs(w http.ResponseWriter, r *http.Request) {
-	docs := map[string]interface{}{
+	docs := map[string]any{
 		"title":       "Task API",
 		"description": "Asynchronous task processing API",
 		"version":     "1.0.0",
-		"endpoints": map[string]interface{}{
+		"endpoints": map[string]any{
 			"POST /api/v1/tasks":        "Create a new task",
 			"GET /api/v1/tasks":         "List tasks",
 			"GET /api/v1/tasks/{id}":    "Get task by ID",
@@ -329,11 +360,11 @@ func (s *Server) notFoundHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Helper functions
-func (s *Server) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
+func (s *Server) respondWithJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
+	if err := json.NewEncoder(w).Encode(payload); err != nil {	
 		log.Printf("Failed to encode response: %v", err)
 	}
 }

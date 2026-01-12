@@ -7,6 +7,8 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/redis/go-redis/v9 v9.17.2
 	github.com/spf13/viper v1.21.0
+	go.uber.org/zap v1.27.1
+	gonum.org/v1/gonum v0.17.0
 	gopkg.in/rethinkdb/rethinkdb-go.v6 v6.2.2
 )
 
@@ -30,11 +32,13 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/term v0.38.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/tools v0.39.0 // indirect
 	gopkg.in/cenkalti/backoff.v2 v2.2.1 // indirect
 )
