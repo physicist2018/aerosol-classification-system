@@ -13,7 +13,7 @@ import (
 type TaskRepository interface {
 	CreateTask(ctx context.Context, task *domain.Task) error
 	GetTask(ctx context.Context, id string) (*domain.Task, error)
-	UpdateTask(ctx context.Context, id string, updates map[string]interface{}) error
+	UpdateTask(ctx context.Context, id string, updates map[string]any) error
 	ListTasks(ctx context.Context, limit int) ([]domain.Task, error)
 }
 

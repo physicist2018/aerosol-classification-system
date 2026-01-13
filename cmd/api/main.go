@@ -48,7 +48,7 @@ func main() {
 	log.Println("✓ Connected to RethinkDB")
 
 	// Инициализируем базу данных
-	if err := setupDatabase(rethinkSession, cfg.DBName, cfg.TableName); err != nil {
+	if err := setupDatabase(rethinkSession, cfg.DBName, cfg.TaskTableName, cfg.ResultTableName); err != nil {
 		log.Fatalf("Failed to setup database: %v", err)
 	}
 	log.Println("✓ Database setup completed")
@@ -63,7 +63,7 @@ func main() {
 	log.Println("✓ Connected to Redis")
 
 	// Создаем репозиторий
-	repo := repository.NewTaskRepository(rethinkSession, cfg.TableName)
+	repo := repository.NewTaskRepository(rethinkSession, cfg.TaskTableName)
 
 	// Создаем API сервер
 	apiServer := api.NewServer(repo, redisClient, cfg)
@@ -95,7 +95,7 @@ func logConfig(cfg *config.Config) {
 	log.Printf("  Consumer Group: %s", cfg.ConsumerGroup)
 	log.Printf("  RethinkDB URL: %s", cfg.RethinkDBURL)
 	log.Printf("  Database: %s", cfg.DBName)
-	log.Printf("  Table: %s", cfg.TableName)
+	log.Printf("  Table: %s", cfg.TaskTableName)
 	log.Printf("  Server Port: %s", cfg.ServerPort)
 	log.Printf("  Health Port: %s", cfg.HealthPort)
 	log.Printf("  Worker Count: %d", cfg.WorkerCount)
@@ -155,7 +155,7 @@ func testRethinkDBConnection(session *r.Session) error {
 	return nil
 }
 
-func setupDatabase(session *r.Session, dbName, tableName string) error {
+func setupDatabase(session *r.Session, dbName, taskTableName, resultTableName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -195,7 +195,7 @@ func setupDatabase(session *r.Session, dbName, tableName string) error {
 	session.Use(dbName)
 
 	// Проверяем и создаем таблицу
-	log.Printf("Setting up table '%s'...", tableName)
+	log.Printf("Setting up table '%s'...", taskTableName)
 
 	cursor2, err := r.TableList().Run(session, runOpts)
 	if err != nil {
@@ -210,27 +210,62 @@ func setupDatabase(session *r.Session, dbName, tableName string) error {
 
 	tableExists := false
 	for _, table := range tableList {
-		if table == tableName {
+		if table == taskTableName {
 			tableExists = true
 			break
 		}
 	}
 
 	if !tableExists {
-		log.Printf("Creating table '%s'...", tableName)
-		_, err := r.TableCreate(tableName).RunWrite(session, runOpts)
+		log.Printf("Creating table '%s'...", taskTableName)
+		_, err := r.TableCreate(taskTableName).RunWrite(session, runOpts)
 		if err != nil {
 			return fmt.Errorf("failed to create table: %w", err)
 		}
-		log.Printf("Table '%s' created", tableName)
+		log.Printf("Table '%s' created", taskTableName)
 
 		time.Sleep(1 * time.Second)
 
-		if err := createIndexes(session, tableName, ctx); err != nil {
+		if err := createIndexes(session, taskTableName, ctx); err != nil {
 			log.Printf("Warning: Failed to create indexes: %v", err)
 		}
 	}
 
+	// Проверяем и создаем таблицу
+	log.Printf("Setting up table '%s'...", resultTableName)
+
+	cursor2, err = r.TableList().Run(session, runOpts)
+	if err != nil {
+		return fmt.Errorf("failed to list tables: %w", err)
+	}
+	defer cursor2.Close()
+
+	if err := cursor2.All(&tableList); err != nil {
+		return fmt.Errorf("failed to read table list: %w", err)
+	}
+
+	tableExists = false
+	for _, table := range tableList {
+		if table == resultTableName {
+			tableExists = true
+			break
+		}
+	}
+
+	if !tableExists {
+		log.Printf("Creating table '%s'...", resultTableName)
+		_, err := r.TableCreate(resultTableName).RunWrite(session, runOpts)
+		if err != nil {
+			return fmt.Errorf("failed to create table: %w", err)
+		}
+		log.Printf("Table '%s' created", resultTableName)
+
+		time.Sleep(1 * time.Second)
+
+		if err := createIndexes(session, resultTableName, ctx); err != nil {
+			log.Printf("Warning: Failed to create indexes: %v", err)
+		}
+	}
 	return nil
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"aerosol-system/internal/config"
 	"aerosol-system/internal/domain"
+	"aerosol-system/internal/infrastructure"
 	"aerosol-system/internal/messaging"
 	"aerosol-system/internal/repository"
 	"aerosol-system/pkg/aerosol"
@@ -20,6 +21,7 @@ import (
 type Worker struct {
 	id         string
 	repo       repository.TaskRepository
+	resultRepo repository.ResultRepository
 	msgClient  messaging.MessageClient
 	cfg        *config.Config
 	stopChan   chan struct{}
@@ -30,15 +32,16 @@ type Worker struct {
 	processing atomic.Int32 // Количество задач в обработке
 }
 
-func NewWorker(id string, repo repository.TaskRepository,
+func NewWorker(id string, repo repository.TaskRepository, resultRepo repository.ResultRepository,
 	msgClient messaging.MessageClient, cfg *config.Config) *Worker {
 
 	return &Worker{
-		id:        id,
-		repo:      repo,
-		msgClient: msgClient,
-		cfg:       cfg,
-		stopChan:  make(chan struct{}),
+		id:         id,
+		repo:       repo,
+		resultRepo: resultRepo,
+		msgClient:  msgClient,
+		cfg:        cfg,
+		stopChan:   make(chan struct{}),
 	}
 }
 
@@ -141,7 +144,7 @@ func (w *Worker) processTaskWithRetry(ctx context.Context, taskID string) error 
 
 func (w *Worker) processSingleTask(ctx context.Context, taskID string, attempt int) error {
 	// Обновляем статус задачи
-	updateData := map[string]interface{}{
+	updateData := map[string]any{
 		"status":     domain.TaskStatusProcessing,
 		"updated_at": time.Now(),
 		"worker_id":  w.id,
@@ -165,14 +168,55 @@ func (w *Worker) processSingleTask(ctx context.Context, taskID string, attempt i
 		w.updateTaskError(ctx, taskID, err, attempt)
 		return fmt.Errorf("task execution failed: %w", err)
 	}
+	log.Println(*result)
+	err = w.resultRepo.CreateResult(ctx, &domain.Result{
+		TaskID: taskID,
+		Nd: &infrastructure.MatrixData{
+			Rows:         task.DepMat.Rows,
+			Cols:         task.DepMat.Cols,
+			HeightLabels: task.DepMat.HeightLabels,
+			TimeLabels:   task.DepMat.TimeLabels,
+			FlatData:     result.Nd.RawMatrix().Data,
+		},
+		Nu: &infrastructure.MatrixData{
+			Rows:         task.DepMat.Rows,
+			Cols:         task.DepMat.Cols,
+			HeightLabels: task.DepMat.HeightLabels,
+			TimeLabels:   task.DepMat.TimeLabels,
+			FlatData:     result.Nu.RawMatrix().Data,
+		},
+		Ns: &infrastructure.MatrixData{
+			Rows:         task.DepMat.Rows,
+			Cols:         task.DepMat.Cols,
+			HeightLabels: task.DepMat.HeightLabels,
+			TimeLabels:   task.DepMat.TimeLabels,
+			FlatData:     result.Ns.RawMatrix().Data,
+		},
+		Residuals: &infrastructure.MatrixData{
+			Rows:         task.DepMat.Rows,
+			Cols:         task.DepMat.Cols,
+			HeightLabels: task.DepMat.HeightLabels,
+			TimeLabels:   task.DepMat.TimeLabels,
+			FlatData:     result.Residuals.RawMatrix().Data,
+		},
+		Sd:        result.Sd,
+		Su:        result.Su,
+		Ss:        result.Ss,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+
+	if err != nil {
+		return fmt.Errorf("Error updating results %w", err)
+	}
 
 	// Обновляем успешный результат
-	return w.updateTaskSuccess(ctx, taskID, result)
+	return w.updateTaskSuccess(ctx, taskID, "Ok")
 }
 
 // TODO update this function
 // here must be called solution logic
-func (w *Worker) executeTask(task *domain.Task) (string, error) {
+func (w *Worker) executeTask(task *domain.Task) (*aerosol.ClassificationResults, error) {
 	// Имитация обработки
 
 	processTime := time.Duration(rand.Intn(2000)+10000) * time.Millisecond // 1-3 секунды
@@ -188,26 +232,18 @@ func (w *Worker) executeTask(task *domain.Task) (string, error) {
 		Logger:        nil,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create aerosol classifier: %w", err)
+		return nil, fmt.Errorf("failed to create aerosol classifier: %w", err)
 	}
 
-	_, err = aerosolClassifier.Classify(task.DepMat.Matrix(), task.FlCapMat.Matrix(), task.VolMat.Matrix(),
+	clsRes, err := aerosolClassifier.Classify(task.DepMat.Matrix(),
+		task.FlCapMat.Matrix(),
+		task.VolMat.Matrix(),
 		task.BackMat.Matrix())
 	if err != nil {
-		return "", fmt.Errorf("failed to classify aerosol: %w", err)
-	}
-	log.Println(err)
-
-	// Бизнес-логика здесь
-	result := fmt.Sprintf("Processed '%s' by %s in %v",
-		task.Data, w.id, processTime)
-
-	// 10% вероятность ошибки для тестирования
-	if rand.Float32() < 0.1 {
-		return "", fmt.Errorf("random processing error")
+		return nil, fmt.Errorf("failed to classify aerosol: %w", err)
 	}
 
-	return result, nil
+	return &clsRes, nil
 }
 
 func (w *Worker) updateTaskError(ctx context.Context, taskID string, err error, attempt int) {

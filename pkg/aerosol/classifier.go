@@ -436,6 +436,9 @@ func (ac *AerosolClassifier) Classify(dep, flcap, vol, beta *mat.Dense) (
 
 	return ClassificationResults{
 		Residuals: residuals,
+		Nd:        nd,
+		Nu:        nu,
+		Ns:        ns,
 		DeltaD:    deltaD,
 		DeltaU:    deltaU,
 		DeltaS:    deltaS,

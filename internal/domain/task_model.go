@@ -33,3 +33,17 @@ type Task struct {
 type CreateTaskRequest struct {
 	Data string `json:"data" validate:"required"`
 }
+
+type Result struct {
+	ID        string                     `gorethink:"id,omitempty" json:"id"`
+	TaskID    string                     `gorethink:"task_id" json:"task_id"`
+	Nd        *infrastructure.MatrixData `gorethink:"nd" json:"nd"`
+	Nu        *infrastructure.MatrixData `gorethink:"nu" json:"nu"`
+	Ns        *infrastructure.MatrixData `gorethink:"ns" json:"ns"`
+	Residuals *infrastructure.MatrixData `gorethink:"residuals" json:"residuals"`
+	Sd        float64                    `gorethink:"sd" json:"sd"`
+	Su        float64                    `gorethink:"su" json:"su"`
+	Ss        float64                    `gorethink:"ss" json:"ss"`
+	CreatedAt time.Time                  `gorethink:"created_at" json:"created_at"`
+	UpdatedAt time.Time                  `gorethink:"updated_at" json:"updated_at"`
+}

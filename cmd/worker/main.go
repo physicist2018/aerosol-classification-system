@@ -38,7 +38,8 @@ func main() {
 	log.Printf("  Consumer Group: %s", cfg.ConsumerGroup)
 	log.Printf("  RethinkDB URL: %s", cfg.RethinkDBURL)
 	log.Printf("  Database: %s", cfg.DBName)
-	log.Printf("  Table: %s", cfg.TableName)
+	log.Printf("  TaskTable: %s", cfg.TaskTableName)
+	log.Printf("  ResultTable: %s", cfg.ResultTableName)
 	log.Printf("  Worker Count: %d", cfg.WorkerCount)
 	log.Printf("  Health Port: %s", cfg.HealthPort)
 
@@ -67,7 +68,8 @@ func main() {
 	}
 
 	// Создаем репозиторий
-	repo := repository.NewTaskRepository(rethinkSession, cfg.TableName)
+	repo := repository.NewTaskRepository(rethinkSession, cfg.TaskTableName)
+	resultRepo := repository.NewResultRepository(rethinkSession, cfg.ResultTableName)
 
 	// Подключаемся к Redis
 	redisClient, err := connectToRedis(cfg)
@@ -82,7 +84,7 @@ func main() {
 	healthServer := startHealthServer(cfg.HealthPort, redisClient, rethinkSession)
 
 	// Создаем и запускаем воркеров
-	workers := createWorkers(cfg.WorkerCount, repo, redisClient, cfg)
+	workers := createWorkers(cfg.WorkerCount, repo, resultRepo, redisClient, cfg)
 	startWorkers(ctx, workers)
 
 	log.Printf("✓ Started %d workers", len(workers))
@@ -126,7 +128,7 @@ func connectToRedis(cfg *config.Config) (messaging.MessageClient, error) {
 	return nil, fmt.Errorf("failed to connect to Redis after %d attempts: %w", maxRetries, err)
 }
 
-func createWorkers(count int, repo repository.TaskRepository,
+func createWorkers(count int, repo repository.TaskRepository, resultRepo repository.ResultRepository,
 	msgClient messaging.MessageClient, cfg *config.Config) []*worker.Worker {
 
 	workers := make([]*worker.Worker, count)
@@ -134,7 +136,7 @@ func createWorkers(count int, repo repository.TaskRepository,
 
 	for i := 0; i < count; i++ {
 		workerID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), i+1)
-		w := worker.NewWorker(workerID, repo, msgClient, cfg)
+		w := worker.NewWorker(workerID, repo, resultRepo, msgClient, cfg)
 		workers[i] = w
 		log.Printf("Created worker: %s", workerID)
 	}

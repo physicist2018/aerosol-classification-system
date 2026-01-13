@@ -18,9 +18,10 @@ type Config struct {
 	ConsumerGroup string `mapstructure:"redis_consumer_group"`
 
 	// RethinkDB
-	RethinkDBURL string `mapstructure:"rethinkdb_url"`
-	DBName       string `mapstructure:"db_name"`
-	TableName    string `mapstructure:"table_name"`
+	RethinkDBURL    string `mapstructure:"rethinkdb_url"`
+	DBName          string `mapstructure:"db_name"`
+	TaskTableName   string `mapstructure:"task_table_name"`
+	ResultTableName string `mapstructure:"result_table_name"`
 
 	// Server
 	ServerPort string `mapstructure:"server_port"`
@@ -42,7 +43,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("redis_consumer_group", "tasks-workers")
 	viper.SetDefault("rethinkdb_url", "lidarbackup.dvo.ru:49160")
 	viper.SetDefault("db_name", "aerosol_classification_system")
-	viper.SetDefault("table_name", "classification_results")
+	viper.SetDefault("task_table_name", "classification_tasks")
+	viper.SetDefault("result_table_name", "classification_results")
 	viper.SetDefault("server_port", ":8081")
 	viper.SetDefault("health_port", ":8082")
 	viper.SetDefault("max_retries", 3)
@@ -94,7 +96,8 @@ func LoadFromEnv() (*Config, error) {
 	viper.SetDefault("REDIS_CONSUMER_GROUP", "tasks-workers")
 	viper.SetDefault("RETHINKDB_URL", "lidarbackup.dvo.ru:49160")
 	viper.SetDefault("DB_NAME", "aerosol_classification_system")
-	viper.SetDefault("TABLE_NAME", "classification_results")
+	viper.SetDefault("TASK_TABLE_NAME", "classification_tasks")
+	viper.SetDefault("RESULT_TABLE_NAME", "classification_results")
 	viper.SetDefault("SERVER_PORT", ":8081")
 	viper.SetDefault("HEALTH_PORT", ":8082")
 	viper.SetDefault("WORKER_COUNT", 1)
@@ -112,7 +115,8 @@ func LoadFromEnv() (*Config, error) {
 	cfg.ConsumerGroup = viper.GetString("REDIS_CONSUMER_GROUP")
 	cfg.RethinkDBURL = viper.GetString("RETHINKDB_URL")
 	cfg.DBName = viper.GetString("DB_NAME")
-	cfg.TableName = viper.GetString("TABLE_NAME")
+	cfg.TaskTableName = viper.GetString("TASK_TABLE_NAME")
+	cfg.ResultTableName = viper.GetString("RESULT_TABLE_NAME")
 	cfg.ServerPort = viper.GetString("SERVER_PORT")
 	cfg.HealthPort = viper.GetString("HEALTH_PORT")
 	cfg.WorkerCount = viper.GetInt("WORKER_COUNT")
